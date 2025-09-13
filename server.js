@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Version
+// server.js - Enhanced MongoDB Connection Version
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -29,7 +29,8 @@ app.use(cors({
     'http://localhost:3000', 
     'http://localhost:3001', 
     'http://localhost:5173',
-    'http://localhost:5174'
+    'http://localhost:5174',
+    'https://your-frontend-domain.com' // Add your production domain
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -70,7 +71,6 @@ app.use(express.static(path.join(__dirname, "public")));
 export const protect = (req, res, next) => {
   const token = req.header("Authorization")?.replace("Bearer ", "") || req.header("x-auth-token");
   if (!token) return res.status(401).json({ msg: "No token, authorization denied" });
-
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded.user;
@@ -87,26 +87,30 @@ export const authorize = (req, res, next) => {
   next();
 };
 
-// -------- Database Connection --------
-const connectDB = async () => {
+// -------- Enhanced Database Connection with Retry Logic --------
+const connectDB = async (retries = 3, delay = 5000) => {
   try {
     if (!process.env.MONGO_URI) {
       throw new Error("MONGO_URI environment variable is not defined");
     }
-
+    
+    // Log connection attempt (without sensitive data)
+    const sanitizedUri = process.env.MONGO_URI.replace(/:([^:@]+)@/, ':***@');
+    console.log(`📡 Connecting to MongoDB: ${sanitizedUri}`);
+    
     mongoose.set("strictQuery", false);
-
-    // ✅ No need for useNewUrlParser or useUnifiedTopology in Mongoose v6+
     await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 10000, // still useful for debugging
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
     });
-
+    
     console.log("✅ MongoDB Connected");
-
+    
     // Optional: list collections if DB connection succeeded
     const collections = await mongoose.connection.db.listCollections().toArray();
     console.log("Available collections:", collections.map((c) => c.name));
-
+    
     return true;
   } catch (err) {
     console.error("❌ MongoDB Connection Failed:", {
@@ -114,13 +118,19 @@ const connectDB = async () => {
       stack: err.stack,
       timestamp: new Date().toISOString(),
     });
-    throw err;
+    
+    if (retries > 0) {
+      console.log(`Retrying connection in ${delay/1000} seconds... (${retries} attempts left)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return connectDB(retries - 1, delay);
+    } else {
+      throw err;
+    }
   }
 };
 
 // -------- Import Models after DB connection --------
 let User = null;
-
 const loadModels = async () => {
   try {
     const UserModel = await import("./models/User.js");
@@ -138,11 +148,10 @@ const createDefaultAdmin = async () => {
     if (!User) {
       throw new Error('User model not loaded');
     }
-
     if (!process.env.JWT_SECRET) {
       throw new Error('JWT_SECRET environment variable is not defined');
     }
-
+    
     const adminExists = await User.findOne({ email: "admin@gmail.com" });
     if (!adminExists) {
       const hashedPassword = await bcrypt.hash("admin123", 10);
@@ -185,7 +194,6 @@ const importRoute = async (routePath, routeName) => {
 const loadRoutes = async () => {
   const routes = {};
   
-  // Define all possible routes - only load what exists
   const routeDefinitions = [
     { path: "./routes/authRoutes.js", name: "authRoutes", endpoint: "/api/auth" },
     { path: "./routes/employees.js", name: "employeeRoutes", endpoint: "/api/employees" },
@@ -208,8 +216,7 @@ const loadRoutes = async () => {
     { path: "./routes/dayBookRoutes.js", name: "dayBookRoutes", endpoint: "/api/daybook" },
     { path: "./routes/ledgerRoutes.js", name: "ledgerRoutes", endpoint: "/api/ledger" }
   ];
-
-  // Load each route
+  
   for (const routeDef of routeDefinitions) {
     const handler = await importRoute(routeDef.path, routeDef.name);
     routes[routeDef.name] = {
@@ -232,7 +239,7 @@ const registerRoutes = async (routes) => {
   } else {
     console.error("❌ No auth routes found - this will cause login failures!");
   }
-
+  
   // Register trash routes with detailed logging
   if (routes.trashRoutes?.handler) {
     app.use("/api/trash", (req, res, next) => {
@@ -251,7 +258,7 @@ const registerRoutes = async (routes) => {
   } else {
     console.error("❌ TRASH ROUTES NOT FOUND - Trash functionality will not work!");
   }
-
+  
   // Register employee routes
   if (routes.employeeRoutes?.handler) {
     app.use("/api/employees", routes.employeeRoutes.handler);
@@ -259,7 +266,7 @@ const registerRoutes = async (routes) => {
   } else {
     console.warn("⚠️ No employee routes found");
   }
-
+  
   // Register all other routes
   Object.entries(routes).forEach(([routeName, routeData]) => {
     if (routeData.handler && routeData.endpoint && 
@@ -291,7 +298,7 @@ const setupUtilityRoutes = () => {
   app.get('/', (req, res) => {
     res.json({ 
       message: '🏆 Loan & Jewelry Management API is running...', 
-      version: '2.0.1',
+      version: '2.0.2',
       timestamp: new Date().toISOString(),
       endpoints: {
         health: '/health',
@@ -369,7 +376,7 @@ const setupUtilityRoutes = () => {
           userModelTest = `Error: ${error.message}`;
         }
       }
-
+      
       let trashModelTest = 'Not available';
       try {
         const Trash = (await import('./models/Trash.js')).default;
@@ -378,7 +385,7 @@ const setupUtilityRoutes = () => {
       } catch (error) {
         trashModelTest = `Error: ${error.message}`;
       }
-
+      
       res.json({
         status: 'healthy',
         uptime: Math.floor(process.uptime()),
@@ -408,10 +415,10 @@ const setupUtilityRoutes = () => {
           message: 'Database not connected'
         });
       }
-
+      
       const collections = await mongoose.connection.db.listCollections().toArray();
       const collectionInfo = {};
-
+      
       for (const collection of collections) {
         try {
           const count = await mongoose.connection.db.collection(collection.name).countDocuments();
@@ -427,7 +434,7 @@ const setupUtilityRoutes = () => {
           };
         }
       }
-
+      
       res.json({
         success: true,
         database: mongoose.connection.db.databaseName,
@@ -436,7 +443,6 @@ const setupUtilityRoutes = () => {
         trashCollection: collectionInfo.trashes || { message: 'No trash collection found' },
         timestamp: new Date().toISOString()
       });
-
     } catch (error) {
       res.status(500).json({
         success: false,
@@ -525,13 +531,13 @@ const setupUtilityRoutes = () => {
       { name: 'Overview', path: '/api/overview', status: 'active' },
       { name: 'Trash', path: '/api/trash', status: 'active' }
     ];
-
+    
     res.json({
       success: true,
       apiStatus: 'running',
       routes: routes,
       timestamp: new Date().toISOString(),
-      version: '2.0.1'
+      version: '2.0.2'
     });
   });
 };
@@ -570,8 +576,13 @@ const startServer = async () => {
   try {
     console.log('🚀 Starting server initialization...');
     
+    // Check for required environment variables
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET environment variable is not defined");
+    }
+    
     console.log('📡 Connecting to MongoDB...');
-    await connectDB();
+    await connectDB(); // Now with retry logic
     
     console.log('📋 Loading models...');
     await loadModels();
@@ -608,7 +619,7 @@ const startServer = async () => {
       console.log('\n✅ All systems operational!');
       console.log('🎉 ================================\n');
     });
-
+    
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
         console.error(`❌ Port ${PORT} is already in use. Please free the port or choose another.`);
@@ -618,7 +629,7 @@ const startServer = async () => {
         process.exit(1);
       }
     });
-
+    
     const gracefulShutdown = (signal) => {
       console.log(`Received ${signal}. Performing graceful shutdown...`);
       server.close(() => {
@@ -629,7 +640,7 @@ const startServer = async () => {
         });
       });
     };
-
+    
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     
@@ -637,12 +648,12 @@ const startServer = async () => {
       console.error('❌ Uncaught Exception:', err);
       process.exit(1);
     });
-
+    
     process.on('unhandledRejection', (err) => {
       console.error('❌ Unhandled Rejection:', err);
       process.exit(1);
     });
-
+    
     return server;
     
   } catch (error) {
@@ -654,10 +665,10 @@ const startServer = async () => {
     console.log('- Check if auth routes exist');
     console.log('- Check if User model exists');
     console.log('- Check if trash routes exist');
+    console.log('- Ensure MongoDB Atlas IP whitelist is configured');
     process.exit(1);
   }
 };
 
 startServer();
-
 export default app;
