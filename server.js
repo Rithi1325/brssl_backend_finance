@@ -91,28 +91,28 @@ export const authorize = (req, res, next) => {
 const connectDB = async () => {
   try {
     if (!process.env.MONGO_URI) {
-      throw new Error('MONGO_URI environment variable is not defined');
+      throw new Error("MONGO_URI environment variable is not defined");
     }
 
     mongoose.set("strictQuery", false);
-    
+
+    // ✅ No need for useNewUrlParser or useUnifiedTopology in Mongoose v6+
     await mongoose.connect(process.env.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 10000, // still useful for debugging
     });
-    
+
     console.log("✅ MongoDB Connected");
-    
+
+    // Optional: list collections if DB connection succeeded
     const collections = await mongoose.connection.db.listCollections().toArray();
-    console.log('Available collections:', collections.map(c => c.name));
-    
+    console.log("Available collections:", collections.map((c) => c.name));
+
     return true;
   } catch (err) {
     console.error("❌ MongoDB Connection Failed:", {
       message: err.message,
       stack: err.stack,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
     throw err;
   }
