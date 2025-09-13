@@ -1,4 +1,4 @@
-// server.js - Enhanced MongoDB Connection Version
+// server.js - Enhanced with IP Detection
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -8,6 +8,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import https from 'https'; // Add this import
 
 // -------- Load env variables first --------
 dotenv.config();
@@ -30,7 +31,7 @@ app.use(cors({
     'http://localhost:3001', 
     'http://localhost:5173',
     'http://localhost:5174',
-    'https://your-frontend-domain.com' // Add your production domain
+    'https://your-frontend-domain.com'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -85,6 +86,17 @@ export const authorize = (req, res, next) => {
     return res.status(403).json({ msg: "Access denied. Admin privileges required." });
   }
   next();
+};
+
+// -------- Function to get public IP --------
+const getPublicIP = () => {
+  return new Promise((resolve, reject) => {
+    https.get('https://api.ipify.org', (res) => {
+      let ip = '';
+      res.on('data', (chunk) => { ip += chunk; });
+      res.on('end', () => { resolve(ip); });
+    }).on('error', reject);
+  });
 };
 
 // -------- Enhanced Database Connection with Retry Logic --------
@@ -298,7 +310,7 @@ const setupUtilityRoutes = () => {
   app.get('/', (req, res) => {
     res.json({ 
       message: '🏆 Loan & Jewelry Management API is running...', 
-      version: '2.0.2',
+      version: '2.0.3',
       timestamp: new Date().toISOString(),
       endpoints: {
         health: '/health',
@@ -308,6 +320,7 @@ const setupUtilityRoutes = () => {
         testStock: '/test-stock',
         testAuth: '/test-auth',
         testTrash: '/test-trash',
+        ip: '/ip', // Added IP endpoint
         auth: '/api/auth',
         employees: '/api/employees',
         jewels: '/api/jewels',
@@ -324,6 +337,25 @@ const setupUtilityRoutes = () => {
       },
       status: 'Running'
     });
+  });
+
+  // Added IP endpoint
+  app.get('/ip', async (req, res) => {
+    try {
+      const publicIP = await getPublicIP();
+      res.json({
+        success: true,
+        ip: publicIP,
+        message: 'This is the public IP of the server. Add this IP to your MongoDB Atlas whitelist.',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+    }
   });
 
   app.get('/test-trash', async (req, res) => {
@@ -537,7 +569,7 @@ const setupUtilityRoutes = () => {
       apiStatus: 'running',
       routes: routes,
       timestamp: new Date().toISOString(),
-      version: '2.0.2'
+      version: '2.0.3'
     });
   });
 };
@@ -581,6 +613,16 @@ const startServer = async () => {
       throw new Error("JWT_SECRET environment variable is not defined");
     }
     
+    // Get and log the public IP
+    try {
+      const publicIP = await getPublicIP();
+      console.log(`🌐 Server public IP: ${publicIP}`);
+      console.log('📋 Please add this IP to your MongoDB Atlas whitelist if you haven\'t already.');
+      console.log('🔗 MongoDB Atlas Network Access: https://cloud.mongodb.com/v2/CLUSTER_ID#/security/network/accessList');
+    } catch (err) {
+      console.error('❌ Could not get public IP:', err.message);
+    }
+    
     console.log('📡 Connecting to MongoDB...');
     await connectDB(); // Now with retry logic
     
@@ -613,6 +655,7 @@ const startServer = async () => {
       console.log(`📋 API Status: http://localhost:${PORT}/api-status`);
       console.log(`🧪 Test Auth: http://localhost:${PORT}/test-auth`);
       console.log(`🗑️  Test Trash: http://localhost:${PORT}/test-trash`);
+      console.log(`🌐 Server IP: http://localhost:${PORT}/ip`);
       console.log('\n👤 Default Admin Credentials:');
       console.log('   📧 Email: admin@gmail.com');
       console.log('   🔑 Password: admin123');
